@@ -16,6 +16,7 @@
 // ============================================================
 
 const fetch = global.fetch;
+const catalyst = require("zcatalyst-sdk-node");
 const pdfParse = require("pdf-parse");
 const XLSX = require("xlsx");
 const mammoth = require("mammoth");
@@ -40,8 +41,18 @@ const EXCEL_EXTS = ["xlsx", "xls"];
 const WORD_EXTS = ["docx"];
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 
-// ---------- 工具: 获取 Desk Access Token ----------
-async function getDeskAccessToken() {
+// ---------- Token 持久化 (Catalyst Cache) ----------
+// Catalyst Cache 默认 segment, key 名
+const TOKEN_CACHE_KEY = "desk_access_token";
+// access_token 实际有效期 1 小时, 提前 5 分钟过期, 即缓存 55 分钟
+const TOKEN_CACHE_TTL_HOURS = 1; // Cache TTL 单位为小时, 最小 1 小时
+
+function getCacheSegment(req) {
+  const app = catalyst.initialize(req);
+  return app.cache().segment();
+}
+
+async function fetchNewAccessToken() {
   const url = `${ZOHO_ACCOUNTS_URL}/oauth/v2/token` +
     `?refresh_token=${encodeURIComponent(ZOHO_REFRESH_TOKEN)}` +
     `&client_id=${encodeURIComponent(ZOHO_CLIENT_ID)}` +
@@ -53,14 +64,52 @@ async function getDeskAccessToken() {
   return data.access_token;
 }
 
-// ---------- 工具: 调用 Desk API ----------
-async function deskApi(token, orgId, path, options = {}) {
-  const headers = {
-    Authorization: `Zoho-oauthtoken ${token}`,
-    orgId: orgId,
-    ...(options.headers || {}),
+// 获取 Token: 优先从 Cache 读, 没有/失效则刷新并写回
+async function getDeskAccessToken(req, forceRefresh = false) {
+  const segment = getCacheSegment(req);
+
+  if (!forceRefresh) {
+    try {
+      const cached = await segment.getValue(TOKEN_CACHE_KEY);
+      if (cached && cached.cache_value) {
+        return cached.cache_value;
+      }
+    } catch (e) {
+      // 没有 cache 记录会抛错, 忽略
+    }
+  }
+
+  const newToken = await fetchNewAccessToken();
+
+  try {
+    // 先删除旧值再写入 (put 在已存在时会冲突)
+    try { await segment.delete(TOKEN_CACHE_KEY); } catch (_) {}
+    await segment.put(TOKEN_CACHE_KEY, newToken, TOKEN_CACHE_TTL_HOURS);
+  } catch (e) {
+    console.error("写入 Cache 失败 (不影响本次请求):", e.message);
+  }
+  return newToken;
+}
+
+// ---------- 工具: 调用 Desk API (含 401 自动刷新重试) ----------
+async function deskApi(req, orgId, path, options = {}) {
+  const doFetch = async (token) => {
+    const headers = {
+      Authorization: `Zoho-oauthtoken ${token}`,
+      orgId: orgId,
+      ...(options.headers || {}),
+    };
+    return fetch(`${ZOHO_DESK_BASE}${path}`, { ...options, headers });
   };
-  const resp = await fetch(`${ZOHO_DESK_BASE}${path}`, { ...options, headers });
+
+  let token = await getDeskAccessToken(req);
+  let resp = await doFetch(token);
+
+  // Token 过期/失效, 强制刷新一次
+  if (resp.status === 401) {
+    token = await getDeskAccessToken(req, true);
+    resp = await doFetch(token);
+  }
   return resp;
 }
 
@@ -206,11 +255,8 @@ module.exports = async (req, res) => {
     }
     const keywordList = Array.isArray(keywords) && keywords.length ? keywords : DEFAULT_KEYWORDS;
 
-    // 1. 换取 Desk Token
-    const token = await getDeskAccessToken();
-
-    // 2. 获取 threads
-    const threadsResp = await deskApi(token, orgId, `/tickets/${ticketId}/threads`);
+    // 1. 获取 threads (内部会从 Cache 读 token, 过期自动刷新)
+    const threadsResp = await deskApi(req, orgId, `/tickets/${ticketId}/threads`);
     if (!threadsResp.ok) {
       return res.status(500).send({ error: "获取 threads 失败", detail: await threadsResp.text() });
     }
@@ -220,20 +266,20 @@ module.exports = async (req, res) => {
       return res.status(200).send({ success: true, skipped: true, reason: "没有客户邮件线程" });
     }
 
-    // 3. 收集所有客户邮件附件
+    // 2. 收集所有客户邮件附件
     const analyses = [];
     let textBuffer = "";
     const processedFiles = [];
 
     for (const thread of inThreads) {
-      const detailResp = await deskApi(token, orgId, `/tickets/${ticketId}/threads/${thread.id}?include=attachments`);
+      const detailResp = await deskApi(req, orgId, `/tickets/${ticketId}/threads/${thread.id}?include=attachments`);
       if (!detailResp.ok) continue;
       const detail = await detailResp.json();
       const attachments = detail.attachments || [];
 
       for (const att of attachments) {
         const ext = (att.name || "").split(".").pop().toLowerCase();
-        const fileResp = await deskApi(token, orgId,
+        const fileResp = await deskApi(req, orgId,
           `/tickets/${ticketId}/threads/${thread.id}/attachments/${att.id}/content`);
         if (!fileResp.ok) continue;
         const arrayBuf = await fileResp.arrayBuffer();
@@ -258,7 +304,7 @@ module.exports = async (req, res) => {
       }
     }
 
-    // 4. 文本类一次性分析
+    // 3. 文本类一次性分析
     if (textBuffer.trim()) {
       const truncated = textBuffer.length > 8000 ? textBuffer.slice(0, 8000) : textBuffer;
       analyses.push(await qianwenAnalyze(truncated, keywordList));
@@ -268,7 +314,7 @@ module.exports = async (req, res) => {
       return res.status(200).send({ success: true, skipped: true, reason: "没有可分析的附件", processedFiles });
     }
 
-    // 5. 合并结果
+    // 4. 合并结果
     const merged = mergeAnalyses(analyses);
     const allTags = [...new Set([...merged.matched_keywords, ...merged.suggested_tags])];
 
@@ -276,14 +322,14 @@ module.exports = async (req, res) => {
       return res.status(200).send({ success: true, applied: false, reason: "未匹配到任何标签", analysis: merged, processedFiles });
     }
 
-    // 6. 获取工单现有标签
-    const ticketResp = await deskApi(token, orgId, `/tickets/${ticketId}`);
+    // 5. 获取工单现有标签
+    const ticketResp = await deskApi(req, orgId, `/tickets/${ticketId}`);
     const ticket = await ticketResp.json();
     const existingTags = Array.isArray(ticket.tags) ? ticket.tags : [];
     const finalTags = [...new Set([...existingTags, ...allTags])];
 
-    // 7. 更新工单标签
-    const updateResp = await deskApi(token, orgId, `/tickets/${ticketId}`, {
+    // 6. 更新工单标签
+    const updateResp = await deskApi(req, orgId, `/tickets/${ticketId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tags: finalTags }),
@@ -292,7 +338,7 @@ module.exports = async (req, res) => {
       console.error("更新标签失败:", await updateResp.text());
     }
 
-    // 8. 添加内部评论
+    // 7. 添加内部评论
     const commentBody = {
       content:
         `【AI附件分析】\n` +
@@ -304,7 +350,7 @@ module.exports = async (req, res) => {
       isPublic: false,
       contentType: "plainText",
     };
-    await deskApi(token, orgId, `/tickets/${ticketId}/comments`, {
+    await deskApi(req, orgId, `/tickets/${ticketId}/comments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(commentBody),
