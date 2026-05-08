@@ -255,20 +255,26 @@ function sendJson(res, statusCode, payload) {
 }
 
 // ---------- 工具: 读取 req body (原生 http 不会自动解析) ----------
+// ⚠️ Zoho ID 是 18 位长整型, 超过 Number.MAX_SAFE_INTEGER (2^53)
+// 直接 JSON.parse 会丢失精度 (例如 ...818 变成 ...800)
+// 所以解析前先把所有 16+ 位裸数字加上引号变成字符串
+function safeJsonParse(text) {
+  if (!text) return {};
+  const safe = text.replace(/:\s*(\d{16,})(\s*[,}])/g, ': "$1"$2');
+  try { return JSON.parse(safe); } catch { return {}; }
+}
+
 async function readJsonBody(req) {
   if (req.body) {
     if (typeof req.body === "string") {
-      try { return JSON.parse(req.body); } catch { return {}; }
+      return safeJsonParse(req.body);
     }
     return req.body;
   }
   return new Promise((resolve) => {
     let data = "";
     req.on("data", chunk => { data += chunk; });
-    req.on("end", () => {
-      if (!data) return resolve({});
-      try { resolve(JSON.parse(data)); } catch { resolve({}); }
-    });
+    req.on("end", () => resolve(safeJsonParse(data)));
     req.on("error", () => resolve({}));
   });
 }
@@ -290,9 +296,17 @@ module.exports = async (req, res) => {
     const keywordList = Array.isArray(keywords) && keywords.length ? keywords : DEFAULT_KEYWORDS;
 
     // 1. 获取 threads (内部会从 Cache 读 token, 过期自动刷新)
-    const threadsResp = await deskApi(req, orgId, `/tickets/${ticketId}/threads`);
+    const threadsPath = `/tickets/${ticketId}/threads`;
+    const threadsResp = await deskApi(req, orgId, threadsPath);
     if (!threadsResp.ok) {
-      return sendJson(res, 500, { error: "获取 threads 失败", detail: await threadsResp.text() });
+      return sendJson(res, 500, {
+        error: "获取 threads 失败",
+        status: threadsResp.status,
+        url: `${ZOHO_DESK_BASE}${threadsPath}`,
+        orgId: String(orgId),
+        ticketId: String(ticketId),
+        detail: await threadsResp.text(),
+      });
     }
     const threadsData = await threadsResp.json();
     const inThreads = (threadsData.data || []).filter(t => t.direction === "in");
