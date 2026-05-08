@@ -1,0 +1,48 @@
+{
+  "defaults": {
+    "project": 1,
+    "env": 1
+  },
+  "actives": {
+    "project": 2,
+    "env": 1
+  },
+  "projects": [
+    {
+      "idx": 1,
+      "id": "7834000000003010",
+      "name": "Polls",
+      "domain": {
+        "id": "10046866830",
+        "name": "polls-787233720.development"
+      },
+      "timezone": "America/Los_Angeles",
+      "env": [
+        {
+          "idx": 1,
+          "id": "787233720",
+          "name": "Development",
+          "type": 3
+        }
+      ]
+    },
+    {
+      "idx": 2,
+      "id": "7834000000409029",
+      "name": "desk-attachment-analyzer",
+      "domain": {
+        "id": "10125353534",
+        "name": "desk-attachment-analyzer-787233720.development"
+      },
+      "timezone": "Asia/Shanghai",
+      "env": [
+        {
+          "idx": 1,
+          "id": "787233720",
+          "name": "Development",
+          "type": 3
+        }
+      ]
+    }
+  ]
+}
