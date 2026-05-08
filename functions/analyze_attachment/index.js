@@ -244,26 +244,56 @@ function mergeAnalyses(list) {
   };
 }
 
+// ---------- 工具: 兼容 Catalyst 原生 http.ServerResponse 的 JSON 响应 ----------
+function sendJson(res, statusCode, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+// ---------- 工具: 读取 req body (原生 http 不会自动解析) ----------
+async function readJsonBody(req) {
+  if (req.body) {
+    if (typeof req.body === "string") {
+      try { return JSON.parse(req.body); } catch { return {}; }
+    }
+    return req.body;
+  }
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", chunk => { data += chunk; });
+    req.on("end", () => {
+      if (!data) return resolve({});
+      try { resolve(JSON.parse(data)); } catch { resolve({}); }
+    });
+    req.on("error", () => resolve({}));
+  });
+}
+
 // ============================================================
 // 主入口
 // ============================================================
 module.exports = async (req, res) => {
   try {
-    const { ticketId, orgId, keywords } = req.body || {};
+    const body = await readJsonBody(req);
+    const { ticketId, orgId, keywords } = body || {};
     if (!ticketId || !orgId) {
-      return res.status(400).send({ error: "缺少 ticketId 或 orgId" });
+      return sendJson(res, 400, { error: "缺少 ticketId 或 orgId" });
     }
     const keywordList = Array.isArray(keywords) && keywords.length ? keywords : DEFAULT_KEYWORDS;
 
     // 1. 获取 threads (内部会从 Cache 读 token, 过期自动刷新)
     const threadsResp = await deskApi(req, orgId, `/tickets/${ticketId}/threads`);
     if (!threadsResp.ok) {
-      return res.status(500).send({ error: "获取 threads 失败", detail: await threadsResp.text() });
+      return sendJson(res, 500, { error: "获取 threads 失败", detail: await threadsResp.text() });
     }
     const threadsData = await threadsResp.json();
     const inThreads = (threadsData.data || []).filter(t => t.direction === "in");
     if (inThreads.length === 0) {
-      return res.status(200).send({ success: true, skipped: true, reason: "没有客户邮件线程" });
+      return sendJson(res, 200, { success: true, skipped: true, reason: "没有客户邮件线程" });
     }
 
     // 2. 收集所有客户邮件附件
@@ -311,7 +341,7 @@ module.exports = async (req, res) => {
     }
 
     if (analyses.length === 0) {
-      return res.status(200).send({ success: true, skipped: true, reason: "没有可分析的附件", processedFiles });
+      return sendJson(res, 200, { success: true, skipped: true, reason: "没有可分析的附件", processedFiles });
     }
 
     // 4. 合并结果
@@ -319,7 +349,7 @@ module.exports = async (req, res) => {
     const allTags = [...new Set([...merged.matched_keywords, ...merged.suggested_tags])];
 
     if (allTags.length === 0) {
-      return res.status(200).send({ success: true, applied: false, reason: "未匹配到任何标签", analysis: merged, processedFiles });
+      return sendJson(res, 200, { success: true, applied: false, reason: "未匹配到任何标签", analysis: merged, processedFiles });
     }
 
     // 5. 获取工单现有标签
@@ -356,7 +386,7 @@ module.exports = async (req, res) => {
       body: JSON.stringify(commentBody),
     });
 
-    res.status(200).send({
+    sendJson(res, 200, {
       success: true,
       applied: true,
       tagsApplied: allTags,
@@ -365,6 +395,6 @@ module.exports = async (req, res) => {
     });
   } catch (err) {
     console.error("处理异常:", err);
-    res.status(500).send({ error: "服务器内部错误", detail: err.message });
+    sendJson(res, 500, { error: "服务器内部错误", detail: err.message });
   }
 };
