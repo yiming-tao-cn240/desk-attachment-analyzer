@@ -1,13 +1,16 @@
 {
-  "name": "desk-attachment-analyzer",
-  "version": "1.0.0",
-  "description": "Zoho Desk 工单附件关键词分析 - 基于千问大模型",
+  "name": "analyze_attachment",
+  "version": "2.0.0",
+  "description": "Zoho Desk 工单邮件附件分析 - 支持 PDF/Excel/Word/图片",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "zcatalyst-sdk-node": "latest"
+    "zcatalyst-sdk-node": "latest",
+    "pdf-parse": "^1.1.1",
+    "xlsx": "^0.18.5",
+    "mammoth": "^1.7.0"
   },
   "engines": {
     "node": ">=18.0.0"

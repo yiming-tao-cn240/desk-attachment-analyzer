@@ -1,175 +1,23 @@
 // ============================================================
-// Zoho Desk Deluge 自定义函数
-// 功能：获取工单附件 → 提取内容 → 调用Catalyst分析 → 打标签
+// Zoho Desk Deluge 自定义函数 (精简版)
+// 功能：将工单ID传给Catalyst，由Catalyst完成全部分析与打标签
 // 触发方式：工作流规则 - 工单创建时触发
-//
-// 参数：
-//   ticketId (String) - 映射到 #ticket.ticketId#
-//   orgId (String) - 你的 Desk 组织ID
 // ============================================================
 
-// ---------- 第一步：获取工单附件列表 ----------
-attachmentsResponse = invokeurl
-[
-    url: "https://desk.zoho.com/api/v1/tickets/" + ticketId + "/attachments"
-    type: GET
-    headers: {"orgId": orgId}
-    connection: "zohodesk"
-];
-
-info "附件列表: " + attachmentsResponse;
-
-if (attachmentsResponse.get("data").size() == 0)
-{
-    info "该工单没有附件，跳过分析";
-    return;
-}
-
-// ---------- 第二步：遍历附件，下载并提取内容 ----------
-allAttachmentContent = "";
-
-for each attachment in attachmentsResponse.get("data")
-{
-    attachmentId = attachment.get("id");
-    attachmentName = attachment.get("name");
-    
-    supportedTypes = {"txt", "csv", "pdf", "doc", "docx", "html", "eml"};
-    fileExtension = attachmentName.getSuffix(".").toLowerCase();
-    
-    if (supportedTypes.contains(fileExtension))
-    {
-        attachmentContent = invokeurl
-        [
-            url: "https://desk.zoho.com/api/v1/tickets/" + ticketId + "/attachments/" + attachmentId + "/content"
-            type: GET
-            headers: {"orgId": orgId}
-            connection: "zohodesk"
-        ];
-        
-        allAttachmentContent = allAttachmentContent + "\n--- 附件: " + attachmentName + " ---\n" + attachmentContent.toString();
-    }
-}
-
-if (allAttachmentContent.isEmpty())
-{
-    info "没有可分析的附件内容";
-    return;
-}
-
-// ---------- 第三步：调用 Catalyst 函数分析内容 ----------
-keywords = List();
-keywords.add("退款");
-keywords.add("投诉");
-keywords.add("紧急");
-keywords.add("故障");
-keywords.add("维修");
-keywords.add("退货");
-keywords.add("换货");
-keywords.add("赔偿");
-keywords.add("法律");
-keywords.add("律师函");
-
-if (allAttachmentContent.length() > 8000)
-{
-    allAttachmentContent = allAttachmentContent.subString(0, 8000);
-}
+// ---------- 参数说明 ----------
+// ticketId: 工单ID（从工作流规则中传入，映射到 #ticket.ticketId#）
+// orgId:    Desk 组织ID（在自定义函数参数中填入）
 
 requestBody = Map();
-requestBody.put("attachmentContent", allAttachmentContent);
-requestBody.put("keywords", keywords);
+requestBody.put("ticketId", ticketId);
+requestBody.put("orgId", orgId);
 
-// ★ 替换为你的 Catalyst 函数 URL
 catalystResponse = invokeurl
 [
-    url: "https://你的项目名.zohoplatform.com/server/analyze_attachment"
+    url: "https://desk-attachment-analyzer-787233720.development.catalystserverless.com/server/analyze_attachment/"
     type: POST
     headers: {"Content-Type": "application/json"}
     body: requestBody.toString()
-    connection: "catalyst"
 ];
 
-info "Catalyst 返回: " + catalystResponse;
-
-// ---------- 第四步：解析结果并给工单打标签 ----------
-if (catalystResponse.get("success") == true)
-{
-    analysisData = catalystResponse.get("data");
-    matchedKeywords = analysisData.get("matched_keywords");
-    suggestedTags = analysisData.get("suggested_tags");
-    
-    allTags = List();
-    for each keyword in matchedKeywords
-    {
-        if (!allTags.contains(keyword))
-        {
-            allTags.add(keyword);
-        }
-    }
-    for each tag in suggestedTags
-    {
-        if (!allTags.contains(tag))
-        {
-            allTags.add(tag);
-        }
-    }
-    
-    if (allTags.size() > 0)
-    {
-        ticketDetail = invokeurl
-        [
-            url: "https://desk.zoho.com/api/v1/tickets/" + ticketId
-            type: GET
-            headers: {"orgId": orgId}
-            connection: "zohodesk"
-        ];
-        
-        existingTags = List();
-        if (ticketDetail.containsKey("tags") && ticketDetail.get("tags") != null)
-        {
-            existingTags = ticketDetail.get("tags");
-        }
-        
-        for each newTag in allTags
-        {
-            if (!existingTags.contains(newTag))
-            {
-                existingTags.add(newTag);
-            }
-        }
-        
-        updateBody = Map();
-        updateBody.put("tags", existingTags);
-        
-        updateResponse = invokeurl
-        [
-            url: "https://desk.zoho.com/api/v1/tickets/" + ticketId
-            type: PATCH
-            headers: {"orgId": orgId, "Content-Type": "application/json"}
-            body: updateBody.toString()
-            connection: "zohodesk"
-        ];
-        
-        info "工单标签更新成功: " + updateResponse;
-        
-        // 添加内部评论记录分析结果
-        summary = analysisData.get("summary");
-        confidence = analysisData.get("confidence");
-        
-        commentBody = Map();
-        commentBody.put("content", "【AI自动分析】\n附件关键词分析结果：\n- 匹配关键词：" + matchedKeywords.toString() + "\n- 建议标签：" + suggestedTags.toString() + "\n- 置信度：" + confidence + "\n- 摘要：" + summary);
-        commentBody.put("isPublic", false);
-        
-        invokeurl
-        [
-            url: "https://desk.zoho.com/api/v1/tickets/" + ticketId + "/comments"
-            type: POST
-            headers: {"orgId": orgId, "Content-Type": "application/json"}
-            body: commentBody.toString()
-            connection: "zohodesk"
-        ];
-    }
-}
-else
-{
-    info "Catalyst 分析失败: " + catalystResponse;
-}
+info "Catalyst 处理结果: " + catalystResponse;
