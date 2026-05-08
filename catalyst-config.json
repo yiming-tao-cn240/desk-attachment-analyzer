@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "analyze_attachment": {
+      "type": "advancedio",
+      "stack": "node18"
+    }
+  }
+}
