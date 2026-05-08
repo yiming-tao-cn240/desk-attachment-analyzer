@@ -280,8 +280,12 @@ module.exports = async (req, res) => {
   try {
     const body = await readJsonBody(req);
     const { ticketId, orgId, keywords } = body || {};
-    if (!ticketId || !orgId) {
-      return sendJson(res, 400, { error: "缺少 ticketId 或 orgId" });
+    if (!ticketId || !orgId || String(ticketId).trim() === "" || String(orgId).trim() === "") {
+      return sendJson(res, 400, {
+        error: "缺少 ticketId 或 orgId",
+        received: { ticketId, orgId },
+        hint: "Deluge 手动测试时请确保 ticketId 已赋值；工作流触发时应映射 #Cases.Case Id#",
+      });
     }
     const keywordList = Array.isArray(keywords) && keywords.length ? keywords : DEFAULT_KEYWORDS;
 
