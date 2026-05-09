@@ -70,23 +70,30 @@ async function getDeskAccessToken(req, forceRefresh = false) {
 
   if (!forceRefresh) {
     try {
-      const cached = await segment.getValue(TOKEN_CACHE_KEY);
-      if (cached && cached.cache_value) {
-        return cached.cache_value;
+      // segment.get(key) 返回 { cache_name, cache_value, expires_in, ... }
+      // segment.getValue(key) 直接返回字符串值本身
+      const cachedValue = await segment.getValue(TOKEN_CACHE_KEY);
+      if (cachedValue && typeof cachedValue === "string") {
+        console.log("[Token Cache] HIT, 使用缓存 token");
+        return cachedValue;
       }
     } catch (e) {
-      // 没有 cache 记录会抛错, 忽略
+      // key 不存在时会抛错, 正常忽略
+      console.log("[Token Cache] MISS:", e.message);
     }
+  } else {
+    console.log("[Token Cache] 强制刷新");
   }
 
   const newToken = await fetchNewAccessToken();
+  console.log("[Token Cache] 已从 Zoho 获取新 token, 写入缓存");
 
   try {
-    // 先删除旧值再写入 (put 在已存在时会冲突)
+    // put 在 key 已存在时会冲突, 先删除
     try { await segment.delete(TOKEN_CACHE_KEY); } catch (_) {}
     await segment.put(TOKEN_CACHE_KEY, newToken, TOKEN_CACHE_TTL_HOURS);
   } catch (e) {
-    console.error("写入 Cache 失败 (不影响本次请求):", e.message);
+    console.error("[Token Cache] 写入失败 (不影响本次请求):", e.message);
   }
   return newToken;
 }
@@ -140,7 +147,7 @@ async function parseAttachment(buffer, ext) {
 
 // ---------- 调用千问纯文本模型 ----------
 async function qianwenAnalyze(content, keywords) {
-  const prompt = `你是一个工单分类助手。请分析以下邮件附件内容，判断其中是否包含以下任何关键词或相关语义。
+  const prompt = `你是一个工单分类助手。请分析以下邮件附件内容，判断其中是否包含以下任何关键词。
 
 关键词列表：${keywords.join("、")}
 
@@ -177,7 +184,7 @@ ${content}
 
 // ---------- 调用千问多模态模型 (图片识别) ----------
 async function qianwenVisionAnalyze(imageBase64, mimeType, keywords) {
-  const prompt = `请分析这张图片内容，判断其中是否包含以下任何关键词或相关语义：${keywords.join("、")}。
+  const prompt = `请分析这张图片内容，判断其中是否包含以下任何关键词：${keywords.join("、")}。
 
 请严格返回JSON：
 {
@@ -320,7 +327,7 @@ module.exports = async (req, res) => {
     const processedFiles = [];
 
     for (const thread of inThreads) {
-      const detailResp = await deskApi(req, orgId, `/tickets/${ticketId}/threads/${thread.id}?include=attachments`);
+      const detailResp = await deskApi(req, orgId, `/tickets/${ticketId}/threads/${thread.id}`);
       if (!detailResp.ok) continue;
       const detail = await detailResp.json();
       const attachments = detail.attachments || [];
