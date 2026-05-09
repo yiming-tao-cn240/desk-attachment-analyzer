@@ -366,27 +366,7 @@ module.exports = async (req, res) => {
     const merged = mergeAnalyses(analyses);
     const allTags = [...new Set([...merged.matched_keywords, ...merged.suggested_tags])];
 
-    if (allTags.length === 0) {
-      return sendJson(res, 200, { success: true, applied: false, reason: "未匹配到任何标签", analysis: merged, processedFiles });
-    }
-
-    // 5. 获取工单现有标签
-    const ticketResp = await deskApi(req, orgId, `/tickets/${ticketId}`);
-    const ticket = await ticketResp.json();
-    const existingTags = Array.isArray(ticket.tags) ? ticket.tags : [];
-    const finalTags = [...new Set([...existingTags, ...allTags])];
-
-    // 6. 更新工单标签
-    const updateResp = await deskApi(req, orgId, `/tickets/${ticketId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tags: finalTags }),
-    });
-    if (!updateResp.ok) {
-      console.error("更新标签失败:", await updateResp.text());
-    }
-
-    // 7. 添加内部评论
+    // 5. 添加内部评论 (标签由 Deluge 端处理)
     const commentBody = {
       content:
         `【AI附件分析】\n` +
@@ -404,15 +384,19 @@ module.exports = async (req, res) => {
       body: JSON.stringify(commentBody),
     });
 
+    // 6. 把分析结果返回给 Deluge, 由 Deluge 端去更新工单标签
     sendJson(res, 200, {
       success: true,
-      applied: true,
-      tagsApplied: allTags,
+      tags: allTags,
+      matched_keywords: merged.matched_keywords,
+      suggested_tags: merged.suggested_tags,
+      confidence: merged.confidence,
+      summary: merged.summary,
       processedFiles,
-      analysis: merged,
     });
   } catch (err) {
     console.error("处理异常:", err);
     sendJson(res, 500, { error: "服务器内部错误", detail: err.message });
   }
 };
+
